@@ -1,0 +1,7 @@
+# Never commit real credentials
+.env
+*.pyc
+__pycache__/
+
+# Local runtime logs
+*.log
