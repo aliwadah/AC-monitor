@@ -31,6 +31,35 @@ Then open:
 `start_server.bat` starts the server hidden. A Scheduled Task named `SolarACServer`
 (trigger: At logon) runs it each time the user logs into Windows.
 
+## Deploy to Railway (cloud hosting)
+
+This app is a Python back-end, so it needs a platform that can run a Python
+process and pass it secrets as environment variables. Railway is a good fit.
+
+> Security note: hosting in the cloud means your credentials live on Railway's
+> servers as **Environment variables (Secret type)**, not in the repo.
+
+Steps:
+1. Sign up / log in at https://railway.app (browser).
+2. "New Project" -> "Deploy from GitHub repo".
+3. Choose this repo (`AC-monitor`).
+4. Railway will build (Nixpacks) and start via `railway.json`
+   (`python server.py`).
+5. Add **Environment variables (Set as Secret)** for every key your app needs:
+   - `SISELI_USER`, `SISELI_PASSWORD`, `SISELI_DEVICE_ID`
+   - `TCL_USER`, `TCL_PASSWORD`, `TCL_AC_NICKNAME`
+   - `ON_THRESHOLD` (e.g. `50`)
+6. Redeploy. Railway auto-assigns a `PORT` env var; `server.py` binds to it.
+7. Open the generated public URL (e.g. `https://ac-monitor.up.railway.app`).
+
+The public URL serves `index.html` (the toggle switch UI) and the
+`/api/status`, `/api/turn_on`, `/api/turn_off` endpoints.
+
+## Local vs hosted
+- Locally: `python server.py`, open `http://localhost:8000`.
+- Hosted: use the Railway public URL. Same UI, but the back-end now runs in
+  the cloud with secrets in Railway env vars.
+
 ## Files
 - `server.py` — Flask server (endpoints `/api/status`, `/api/turn_on`, `/api/turn_off`).
 - `index.html` — the one-page UI (toggle switch + battery gauge).
