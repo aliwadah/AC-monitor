@@ -65,7 +65,7 @@ def _num_env(name, default):
 ON_THRESHOLD = _num_env("ON_THRESHOLD", 50.0)
 OFF_THRESHOLD = _num_env("OFF_THRESHOLD", 50.0)
 ALERT_THRESHOLD = _num_env("ALERT_THRESHOLD", 30.0)
-POLL_SECONDS = int(_num_env("POLL_SECONDS", 600))
+POLL_SECONDS = int(_num_env("POLL_SECONDS", 180))
 
 # ntfy notifications (used by the background auto-monitor)
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
