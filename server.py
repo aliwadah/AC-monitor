@@ -48,13 +48,27 @@ SISELI_USER = os.getenv("SISELI_USER", "")
 SISELI_PASSWORD = os.getenv("SISELI_PASSWORD", "")
 SISELI_DEVICE_ID = os.getenv("SISELI_DEVICE_ID", "")
 
-ON_THRESHOLD = float(os.getenv("ON_THRESHOLD", "50"))
+def _num_env(name, default):
+    """Parse an env var as a number, falling back to `default` on empty/bad value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+ON_THRESHOLD = _num_env("ON_THRESHOLD", 50.0)
 
 TCL_USER = os.getenv("TCL_USER", "")
 TCL_PASSWORD = os.getenv("TCL_PASSWORD", "")
 TCL_AC_NICKNAME = os.getenv("TCL_AC_NICKNAME", "").strip()
 
-PORT = int(os.getenv("PORT", "8000"))
+PORT = int(_num_env("PORT", 8000))
 HOST = os.getenv("HOST", "0.0.0.0")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
