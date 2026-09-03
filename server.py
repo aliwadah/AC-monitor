@@ -112,6 +112,10 @@ def _iot_headers(body_bytes):
 
 
 def read_battery_soc():
+    if not SISELI_USER:
+        raise RuntimeError("Siseli login: SISELI_USER is empty (missing env on host).")
+    if not SISELI_PASSWORD:
+        raise RuntimeError("Siseli login: SISELI_PASSWORD is empty (missing env on host).")
     payload = {"account": SISELI_USER,
                "password": hashlib.md5(SISELI_PASSWORD.encode("utf-8")).hexdigest()}
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -119,7 +123,7 @@ def read_battery_soc():
                    headers=_iot_headers(body), timeout=30)
     d = r.json()
     if r.status_code != 200 or d.get("code") not in (0, None, "0"):
-        raise RuntimeError(f"Siseli login failed: {d.get('message') or d}")
+        raise RuntimeError(f"Siseli login failed: {d.get('message') or d} | raw={r.text[:200]} | soc-user-set={bool(SISELI_USER)}")
     data = d.get("data") or d
     token = data.get("accessToken") or data.get("iotToken") or data.get("token") or ""
 
