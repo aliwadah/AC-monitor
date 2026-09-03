@@ -137,7 +137,8 @@ def read_battery_soc():
     )
     d = r.json()
     if r.status_code != 200 or d.get("code") not in (0, None):
-        raise RuntimeError(f"Siseli device state failed: {d.get('message') or d}")
+        raise RuntimeError(f"Siseli device state failed: {d.get('message') or d} | http={r.status_code} "
+                           f"| raw={r.text[:200]} | device_id='{SISELI_DEVICE_ID}'")
     fields = (d.get("data") or {}).get("fields") or {}
     for key in ("batteryCapacity", "batterySOC", "batteryStateOfCharge"):
         attr = fields.get(key)
