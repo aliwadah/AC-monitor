@@ -63,6 +63,13 @@ def _num_env(name, default):
 
 
 ON_THRESHOLD = _num_env("ON_THRESHOLD", 50.0)
+OFF_THRESHOLD = _num_env("OFF_THRESHOLD", 50.0)
+ALERT_THRESHOLD = _num_env("ALERT_THRESHOLD", 30.0)
+POLL_SECONDS = int(_num_env("POLL_SECONDS", 600))
+
+# ntfy notifications (used by the background auto-monitor)
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
+NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 
 TCL_USER = os.getenv("TCL_USER", "")
 TCL_PASSWORD = os.getenv("TCL_PASSWORD", "")
@@ -285,6 +292,64 @@ class TclClient:
 
 
 # ---------------------------------------------------------------------------
+# ntfy notifications
+# ---------------------------------------------------------------------------
+def send_notification(title, msg, priority=3):
+    if not NTFY_TOPIC:
+        return False
+    try:
+        r = httpx.post(f"{NTFY_SERVER.rstrip('/')}/{NTFY_TOPIC}",
+                       data=msg.encode("utf-8"),
+                       headers={"Title": title, "Priority": str(priority)}, timeout=20)
+        ok = r.status_code == 200
+        log.info("[ntfy] sent: %s (HTTP %s)", title, r.status_code)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ntfy] send failed: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Background auto-monitor (runs forever on the always-on host)
+# Mirrors the GitHub workflow: every POLL_SECONDS seconds, read battery + AC
+# state, turn the AC off automatically when it's on and battery dips below
+# OFF_THRESHOLD, and alert when battery falls below ALERT_THRESHOLD.
+# ---------------------------------------------------------------------------
+def auto_monitor_loop():
+    log.info("Auto-monitor started (poll every %ss, off<%s%%, alert<%s%%).",
+             POLL_SECONDS, OFF_THRESHOLD, ALERT_THRESHOLD)
+    last_low_alert = None
+    while True:
+        try:
+            soc = read_battery_soc()
+            tcl = TclClient()
+            ac_on = tcl.get_power_switch()
+            log.info("Monitor: battery %.1f%%, AC on=%s", soc, ac_on)
+
+            # low-battery alert (throttled: only when value changes or level crossed)
+            if soc < ALERT_THRESHOLD:
+                level = int(soc)
+                if last_low_alert != level:
+                    send_notification("Low battery",
+                                      f"Battery is {soc:.1f}% (< {ALERT_THRESHOLD:.0f}%).",
+                                      priority=4)
+                    last_low_alert = level
+            else:
+                last_low_alert = None
+
+            # auto turn-off when AC on and battery below off-threshold
+            if ac_on is True and soc < OFF_THRESHOLD:
+                log.info("Auto: AC on but battery %.1f%% < %.0f%% -> turning off.",
+                         soc, OFF_THRESHOLD)
+                tcl.set_power(False)
+                send_notification("AC turned OFF automatically",
+                                  f"Battery reached {soc:.1f}% (< {OFF_THRESHOLD:.0f}%).")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Monitor pass error: %s", e)
+        time.sleep(POLL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
@@ -344,6 +409,11 @@ def api_turn_off():
 
 
 if __name__ == "__main__":
+    import threading
+
+    # Start the always-on auto-monitor (auto turn-off + low-battery alerts).
+    threading.Thread(target=auto_monitor_loop, daemon=True).start()
+
     import socket
     host_ip = None
     try:
