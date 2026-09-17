@@ -67,6 +67,14 @@ OFF_THRESHOLD = _num_env("OFF_THRESHOLD", 50.0)
 ALERT_THRESHOLD = _num_env("ALERT_THRESHOLD", 30.0)
 POLL_SECONDS = int(_num_env("POLL_SECONDS", 180))
 
+# Preset applied to the AC every time it is turned on: cool mode, 20 C, fan 7.
+AC_PRESET = {
+    "workMode": int(_num_env("AC_MODE", 1)),          # 1 = cool
+    "targetTemperature": int(_num_env("AC_TARGET_TEMP", 20)),
+    "windSpeed7Gear": int(_num_env("AC_FAN_SPEED", 7)),
+    "windSpeedAutoSwitch": 0,
+}
+
 # ntfy notifications (used by the background auto-monitor)
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
@@ -111,7 +119,8 @@ def _iot_headers(body_bytes):
             "IOT-Open-Body-Hash": body_hash, "IOT-Open-Sign": sig}
 
 
-def read_battery_soc():
+def _fetch_siseli_fields():
+    """Login to Siseli and return the live device 'fields' dict."""
     if not SISELI_USER:
         raise RuntimeError("Siseli login: SISELI_USER is empty (missing env on host).")
     if not SISELI_PASSWORD:
@@ -139,7 +148,22 @@ def read_battery_soc():
     if r.status_code != 200 or d.get("code") not in (0, None):
         raise RuntimeError(f"Siseli device state failed: {d.get('message') or d} | http={r.status_code} "
                            f"| raw={r.text[:200]} | device_id='{SISELI_DEVICE_ID}'")
-    fields = (d.get("data") or {}).get("fields") or {}
+    return (d.get("data") or {}).get("fields") or {}
+
+
+def _field_num(fields, *keys):
+    for k in keys:
+        a = fields.get(k)
+        if a is not None and a.get("value") is not None:
+            try:
+                return float(a["value"])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def read_battery_soc():
+    fields = _fetch_siseli_fields()
     for key in ("batteryCapacity", "batterySOC", "batteryStateOfCharge"):
         attr = fields.get(key)
         if attr and attr.get("value") is not None:
@@ -148,6 +172,24 @@ def read_battery_soc():
             except (TypeError, ValueError):
                 continue
     raise RuntimeError("No battery SOC attribute found.")
+
+
+def read_power_flow():
+    """Return power flows in watts: battery charge (in), discharge (out), load, solar."""
+    fields = _fetch_siseli_fields()
+    volts = _field_num(fields, "batteryVoltage")
+    charge_cur = _field_num(fields, "batteryChargingCurrent")
+    discharge_cur = _field_num(fields, "batteryDischargeCurrent")
+    load_kw = _field_num(fields, "acOutputActivePower")
+    solar_kw = _field_num(fields, "generationPower")
+    charge_w = volts * charge_cur if (volts is not None and charge_cur is not None) else None
+    discharge_w = volts * discharge_cur if (volts is not None and discharge_cur is not None) else None
+    return {
+        "charge_w": round(charge_w, 1) if charge_w is not None else None,
+        "discharge_w": round(discharge_w, 1) if discharge_w is not None else None,
+        "load_w": round(load_kw * 1000.0, 1) if load_kw is not None else None,
+        "solar_w": round(solar_kw * 1000.0, 1) if solar_kw is not None else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +331,14 @@ class TclClient:
     def set_power(self, on: bool):
         iot = self._iot()
         desired = {"powerSwitch": 1 if on else 0}
+        if on:
+            desired.update(AC_PRESET)
         payload = json.dumps({"state": {"desired": desired},
                               "clientToken": f"mobile_{int(time.time())}"})
         topic = f"$aws/things/{self.ac_id}/shadow/update"
         iot.publish(topic=topic, qos=1, payload=payload)
-        log.info("Sent AC %s (%s)", "ON" if on else "OFF", self.ac_id)
+        log.info("Sent AC %s (%s)%s", "ON" if on else "OFF", self.ac_id,
+                 " with preset" if on else "")
 
 
 # ---------------------------------------------------------------------------
@@ -368,12 +413,17 @@ def index():
 @app.route("/api/status")
 def api_status():
     soc = None
+    flow = {"charge_w": None, "discharge_w": None, "load_w": None, "solar_w": None}
     ac_on = None
     err = None
     try:
-        soc = read_battery_soc()
+        flow = read_power_flow()
     except Exception as e:  # noqa: BLE001
         err = f"battery: {e}"
+    try:
+        soc = read_battery_soc()
+    except Exception as e:  # noqa: BLE001
+        err = (err + "; " if err else "") + f"soc: {e}"
     try:
         ac_on = TclClient().get_power_switch()
     except Exception as e:  # noqa: BLE001
@@ -381,6 +431,10 @@ def api_status():
     return jsonify({
         "soc": soc,
         "ac_on": ac_on,
+        "charge_w": flow["charge_w"],
+        "discharge_w": flow["discharge_w"],
+        "load_w": flow["load_w"],
+        "solar_w": flow["solar_w"],
         "on_threshold": ON_THRESHOLD,
         "error": err,
         "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -399,7 +453,7 @@ def api_turn_on():
     try:
         TclClient().set_power(True)
         return jsonify({"ok": True,
-                        "message": f"Battery {soc:.1f}% >= {ON_THRESHOLD:.0f}% — AC turned ON."})
+                        "message": f"Battery {soc:.1f}% >= {ON_THRESHOLD:.0f}% — AC turned ON (cool 20°, fan 7)."})
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "message": f"AC control failed: {e}"}), 500
 

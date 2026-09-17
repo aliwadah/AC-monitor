@@ -76,6 +76,17 @@
   .status-line .dot{display:inline-block; width:8px; height:8px; border-radius:50%;
     background:var(--amber); margin-right:6px; vertical-align:1px;}
   .status-line.live .dot{background:var(--green);}
+
+  .flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .flow-box{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.05);
+    border-radius:16px;padding:16px 12px;text-align:center;}
+  .flow-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;
+    font-weight:600;margin-bottom:10px;}
+  .flow-val{font-size:28px;font-weight:800;line-height:1.1;}
+  .flow-val.green{color:var(--green);}
+  .flow-val.blue{color:var(--blue);}
+  .flow-unit{font-size:11px;color:var(--muted);letter-spacing:.08em;margin-top:2px;}
+  .flow-sub{font-size:12px;color:var(--amber);margin-top:10px;font-weight:600;}
 </style>
 </head>
 <body>
@@ -97,6 +108,24 @@
         <div class="big" id="battBig">--<small>%</small></div>
         <div class="state" id="battState">reading…</div>
         <span class="chip" id="battChip" style="color:var(--muted);background:rgba(255,255,255,.06)">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Power Flow</h2>
+    <div class="flow-grid">
+      <div class="flow-box">
+        <div class="flow-lbl">Charging from solar</div>
+        <div class="flow-val green" id="chargeW">--</div>
+        <div class="flow-unit">W OUT</div>
+        <div class="flow-sub">solar: <span id="solarW">--</span> W</div>
+      </div>
+      <div class="flow-box">
+        <div class="flow-lbl">House usage</div>
+        <div class="flow-val blue" id="loadW">--</div>
+        <div class="flow-unit">W USED</div>
+        <div class="flow-sub">discharge: <span id="dischargeW">--</span> W</div>
       </div>
     </div>
   </div>
@@ -131,6 +160,15 @@
   const statusText = document.getElementById('statusText');
   const toast = document.getElementById('toast');
   let busy = false;
+
+  function fmtW(w){ return (w==null) ? '--' : Math.round(w); }
+
+  function setPowerFlow(d){
+    document.getElementById('chargeW').textContent = fmtW(d.charge_w);
+    document.getElementById('loadW').textContent = fmtW(d.load_w);
+    document.getElementById('solarW').textContent = fmtW(d.solar_w);
+    document.getElementById('dischargeW').textContent = fmtW(d.discharge_w);
+  }
 
   function setGauge(soc){
     const s = (soc == null) ? 0 : Math.max(0, Math.min(100, soc));
@@ -171,6 +209,7 @@
       const r = await fetch('/api/status', {cache:'no-store'});
       const d = await r.json();
       setGauge(d.soc);
+      setPowerFlow(d);
       if(d.ac_on != null) acVisual(d.ac_on);
       if(d.error){
         setStatusText('partial data');
