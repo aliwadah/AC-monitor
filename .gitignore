@@ -1,5 +1,6 @@
 # Never commit real credentials
 .env
+config_secrets.py
 *.pyc
 __pycache__/
 

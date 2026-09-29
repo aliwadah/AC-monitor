@@ -360,40 +360,72 @@ def send_notification(title, msg, priority=3):
 
 
 # ---------------------------------------------------------------------------
-# Background auto-monitor (runs forever on the always-on host)
-# Mirrors the GitHub workflow: every POLL_SECONDS seconds, read battery + AC
-# state, turn the AC off automatically when it's on and battery dips below
-# OFF_THRESHOLD, and alert when battery falls below ALERT_THRESHOLD.
+# Auto-monitor (auto turn-off + low-battery alerts)
+# Can run as a background thread on an always-on host OR be triggered by the
+# /api/monitor endpoint (used on free hosts that forbid background threads).
+# A file-based timestamp throttles both sources to at most one pass per
+# POLL_SECONDS.
 # ---------------------------------------------------------------------------
+_MONITOR_STATE = {"last_low_alert": None}
+_MONITOR_TIMESTAMP_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_pass")
+
+
+def monitor_once():
+    soc = read_battery_soc()
+    tcl = TclClient()
+    ac_on = tcl.get_power_switch()
+    log.info("Monitor: battery %.1f%%, AC on=%s", soc, ac_on)
+
+    if soc < ALERT_THRESHOLD:
+        level = int(soc)
+        if _MONITOR_STATE["last_low_alert"] != level:
+            send_notification("Low battery",
+                              f"Battery is {soc:.1f}% (< {ALERT_THRESHOLD:.0f}%).",
+                              priority=4)
+            _MONITOR_STATE["last_low_alert"] = level
+    else:
+        _MONITOR_STATE["last_low_alert"] = None
+
+    if ac_on is True and soc < OFF_THRESHOLD:
+        log.info("Auto: AC on but battery %.1f%% < %.0f%% -> turning off.",
+                 soc, OFF_THRESHOLD)
+        tcl.set_power(False)
+        send_notification("AC turned OFF automatically",
+                          f"Battery reached {soc:.1f}% (< {OFF_THRESHOLD:.0f}%).")
+        ac_on = False
+    return soc, ac_on
+
+
+def _last_monitor_pass():
+    try:
+        with open(_MONITOR_TIMESTAMP_FILE) as f:
+            return float(f.read().strip() or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _save_monitor_pass():
+    try:
+        with open(_MONITOR_TIMESTAMP_FILE, "w") as f:
+            f.write(str(time.time()))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def run_monitor_if_due():
+    if time.time() - _last_monitor_pass() < POLL_SECONDS:
+        return None
+    result = monitor_once()
+    _save_monitor_pass()
+    return result
+
+
 def auto_monitor_loop():
     log.info("Auto-monitor started (poll every %ss, off<%s%%, alert<%s%%).",
              POLL_SECONDS, OFF_THRESHOLD, ALERT_THRESHOLD)
-    last_low_alert = None
     while True:
         try:
-            soc = read_battery_soc()
-            tcl = TclClient()
-            ac_on = tcl.get_power_switch()
-            log.info("Monitor: battery %.1f%%, AC on=%s", soc, ac_on)
-
-            # low-battery alert (throttled: only when value changes or level crossed)
-            if soc < ALERT_THRESHOLD:
-                level = int(soc)
-                if last_low_alert != level:
-                    send_notification("Low battery",
-                                      f"Battery is {soc:.1f}% (< {ALERT_THRESHOLD:.0f}%).",
-                                      priority=4)
-                    last_low_alert = level
-            else:
-                last_low_alert = None
-
-            # auto turn-off when AC on and battery below off-threshold
-            if ac_on is True and soc < OFF_THRESHOLD:
-                log.info("Auto: AC on but battery %.1f%% < %.0f%% -> turning off.",
-                         soc, OFF_THRESHOLD)
-                tcl.set_power(False)
-                send_notification("AC turned OFF automatically",
-                                  f"Battery reached {soc:.1f}% (< {OFF_THRESHOLD:.0f}%).")
+            run_monitor_if_due()
         except Exception as e:  # noqa: BLE001
             log.warning("Monitor pass error: %s", e)
         time.sleep(POLL_SECONDS)
@@ -465,6 +497,19 @@ def api_turn_off():
         return jsonify({"ok": True, "message": "AC turned OFF."})
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "message": f"AC control failed: {e}"}), 500
+
+
+@app.route("/api/monitor")
+def api_monitor():
+    try:
+        result = run_monitor_if_due()
+        if result is None:
+            return jsonify({"ok": True, "skipped": True})
+        soc, ac_on = result
+        return jsonify({"ok": True, "skipped": False, "soc": soc, "ac_on": ac_on})
+    except Exception as e:  # noqa: BLE001
+        log.warning("Monitor pass error: %s", e)
+        return jsonify({"ok": False, "message": str(e)}), 500
 
 
 if __name__ == "__main__":
