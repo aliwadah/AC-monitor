@@ -415,9 +415,9 @@ def _save_dispatch():
 
 
 def gh_request_refresh():
-    """Dispatch a GitHub monitor run at most once per 600s (returns True if dispatched)."""
+    """Dispatch a GitHub monitor run at most once per _DISPATCH_INTERVAL (returns True if dispatched)."""
     now = time.time()
-    if now - _last_dispatch() < 600:
+    if now - _last_dispatch() < _DISPATCH_INTERVAL:
         return False
     dispatch_ac_command("monitor")
     _save_dispatch()
@@ -430,7 +430,8 @@ def gh_request_refresh():
 # ---------------------------------------------------------------------------
 _GH_STATE_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".acmon_state_cache.json")
 _gh_cache_lock = threading.Lock()
-_CACHE_TTL = 90
+_CACHE_TTL = 45
+_DISPATCH_INTERVAL = 180
 
 
 def _load_state_cache():
@@ -483,7 +484,7 @@ def gh_status_read():
                 refreshed = True
             except Exception:  # noqa: BLE001
                 pass
-            if now - _last_dispatch() >= 600:
+            if now - _last_dispatch() >= _DISPATCH_INTERVAL:
                 _save_dispatch()
                 threading.Thread(target=dispatch_ac_command, args=("monitor",), daemon=True).start()
                 dispatched = True
