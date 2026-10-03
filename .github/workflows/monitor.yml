@@ -11,8 +11,8 @@ on:
         type: choice
         options:
           - monitor
-          - on
-          - off
+          - "on"
+          - "off"
 permissions:
   contents: read
 jobs:
