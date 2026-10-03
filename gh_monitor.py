@@ -109,6 +109,10 @@ def main():
             except Exception as e:  # noqa: BLE001
                 messages.append(f"state read: {e}")
         else:  # off
+            try:
+                soc = server.read_battery_soc()
+            except Exception as e:  # noqa: BLE001
+                messages.append(f"soc read: {e}")
             server.TclClient().set_power(False)
             messages.append("AC turned OFF")
             try:

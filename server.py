@@ -374,7 +374,7 @@ def _gh_request(url, method="GET", data=None, pat=""):
 
 def fetch_gh_state():
     """Latest state.json published by the GitHub Actions monitor."""
-    urls = [GH_STATE_URL, f"https://api.github.com/repos/aliwadah/acstate/contents/state.json"]
+    urls = [f"https://api.github.com/repos/aliwadah/acstate/contents/state.json", GH_STATE_URL]
     for u in urls:
         try:
             headers = {"Accept": "application/vnd.github+json", "User-Agent": "acmon"}
