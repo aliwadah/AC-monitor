@@ -166,10 +166,10 @@ def main():
         except Exception:  # noqa: BLE001
             pass
 
-    # Self-sustain 24/7: in auto-monitor mode, wait ~3 minutes then chain the
+    # Self-sustain 24/7: in auto-monitor mode, wait ~5 minutes then chain the
     # next run (public repo = free Actions minutes, so monitoring keeps going
     # even when nobody opens the page).
-    chain_min = int(os.environ.get("ACMON_CHAIN_MIN", "3"))
+    chain_min = int(os.environ.get("ACMON_CHAIN_MIN", "5"))
     if args.mode == "monitor" and not args.skip_publish and chain_min > 0:
         try:
             time.sleep(chain_min * 60)

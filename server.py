@@ -396,6 +396,7 @@ def dispatch_ac_command(mode):
 
 
 _GH_DISPATCH_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_dispatch")
+_DISPATCH_INTERVAL = 15
 
 
 def _last_dispatch():
@@ -414,16 +415,6 @@ def _save_dispatch():
         pass
 
 
-def gh_request_refresh():
-    """Dispatch a GitHub monitor run at most once per _DISPATCH_INTERVAL (returns True if dispatched)."""
-    now = time.time()
-    if now - _last_dispatch() < _DISPATCH_INTERVAL:
-        return False
-    dispatch_ac_command("monitor")
-    _save_dispatch()
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Cached GitHub state: /api/status answers instantly from this cache and only
 # talks to GitHub when the cache is stale (or on demand via /api/monitor).
@@ -431,7 +422,6 @@ def gh_request_refresh():
 _GH_STATE_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".acmon_state_cache.json")
 _gh_cache_lock = threading.Lock()
 _CACHE_TTL = 45
-_DISPATCH_INTERVAL = 180
 
 
 def _load_state_cache():
@@ -469,8 +459,10 @@ def gh_status_of(state):
 
 
 def gh_status_read():
-    """Return (state_dict_or_None, refreshed_bool, dispatched_bool). Fast path: cached state."""
-    dispatched = False
+    """Return (state_dict_or_None, refreshed_bool). Reads latest published state,
+    refreshing the local cache when stale. Does NOT spawn new runs — the GitHub
+    worker self-chains at its own cadence, and only the manual 'Re-read battery'
+    button (POST /api/refresh) dispatches a run."""
     with _gh_cache_lock:
         cached = _load_state_cache()
         now = time.time()
@@ -484,11 +476,7 @@ def gh_status_read():
                 refreshed = True
             except Exception:  # noqa: BLE001
                 pass
-            if now - _last_dispatch() >= _DISPATCH_INTERVAL:
-                _save_dispatch()
-                threading.Thread(target=dispatch_ac_command, args=("monitor",), daemon=True).start()
-                dispatched = True
-        return (cached or {}).get("state"), refreshed, dispatched
+        return (cached or {}).get("state"), refreshed
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +593,7 @@ def index():
         pass
     if gh_mode() and html:
         try:
-            state, _, _ = gh_status_read()
+            state, _ = gh_status_read()
             payload = json.dumps(gh_status_of(state or {}))
             html = html.replace(
                 "</head>",
@@ -619,12 +607,10 @@ def index():
 def api_status():
     if gh_mode():
         try:
-            state, _, dispatched = gh_status_read()
+            state, refreshed = gh_status_read()
             if not state:
                 raise RuntimeError("no state yet")
-            data = gh_status_of(state)
-            data["refreshing"] = dispatched
-            return jsonify(data)
+            return jsonify(gh_status_of(state))
         except Exception as e:  # noqa: BLE001
             return jsonify({
                 "soc": None, "ac_on": None,
@@ -717,7 +703,7 @@ def api_refresh():
         return jsonify({"ok": False, "message": "not gh-mode"}), 400
     now = time.time()
     since = now - _last_dispatch()
-    if since < 15:
+    if since < _DISPATCH_INTERVAL:
         return jsonify({"ok": True, "started": False, "since": int(since)})
     _save_dispatch()
     threading.Thread(target=dispatch_ac_command, args=("monitor",), daemon=True).start()
@@ -728,8 +714,8 @@ def api_refresh():
 def api_monitor():
     if gh_mode():
         try:
-            state, refreshed, dispatched = gh_status_read()
-            return jsonify({"ok": True, "refreshed": refreshed, "dispatched": dispatched, "state": state})
+            state, refreshed = gh_status_read()
+            return jsonify({"ok": True, "refreshed": refreshed, "state": state})
         except Exception as e:  # noqa: BLE001
             return jsonify({"ok": False, "message": str(e)}), 500
     try:
