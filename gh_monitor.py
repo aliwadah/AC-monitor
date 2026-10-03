@@ -158,12 +158,35 @@ def main():
     if not args.skip_publish and args.pat:
         publish_state(state, args.pat)
 
-    # Wake the PythonAnywhere page so it doesn't sleep-cold between runs.
-    try:
-        import httpx
-        httpx.get("https://aliwadah.pythonanywhere.com/api/monitor", timeout=30)
-    except Exception:  # noqa: BLE001
-        pass
+    # Wake the PythonAnywhere relay so it doesn't sleep-cold between runs.
+    if not args.skip_publish:
+        try:
+            import httpx
+            httpx.get("https://aliwadah.pythonanywhere.com/api/monitor", timeout=30)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Self-sustain 24/7: in auto-monitor mode, wait ~3 minutes then chain the
+    # next run (public repo = free Actions minutes, so monitoring keeps going
+    # even when nobody opens the page).
+    chain_min = int(os.environ.get("ACMON_CHAIN_MIN", "3"))
+    if args.mode == "monitor" and not args.skip_publish and chain_min > 0:
+        try:
+            time.sleep(chain_min * 60)
+            url = f"https://api.github.com/repos/aliwadah/AC-monitor/actions/workflows/monitor.yml/dispatches"
+            body = json.dumps({"ref": "main", "inputs": {"power": "monitor"}}).encode()
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={
+                    "Authorization": f"token {args.pat}",
+                    "Accept": "application/vnd.github+json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "acmon",
+                })
+            resp = urllib.request.urlopen(req, timeout=30)
+            print(f"[gh_monitor] chained next run (HTTP {resp.status})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[gh_monitor] chain failed: {e}")
 
     sys.exit(0 if state["ok"] else 1)
 

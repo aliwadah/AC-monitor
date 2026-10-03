@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0f1a">
+<title>Split AC Control</title>
+<style>
+  :root{
+    --bg:#0d0f1a; --card:#171a29; --card2:#1e2236; --text:#e8eaf2; --muted:#8a90a8;
+    --green:#2fd375; --green-bg:rgba(47,211,117,.12);
+    --red:#ff5a6a; --amber:#ffc24b; --blue:#3d8bff;
+    --radius:22px; --track:#343a52;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  body{padding:22px 16px 40px; max-width:460px; margin:0 auto;}
+  h1{font-size:20px; margin:0 0 2px; font-weight:700;}
+  .sub{color:var(--muted); font-size:13px; margin:0 0 22px;}
+  .card{background:linear-gradient(180deg,var(--card),var(--card2));
+    border:1px solid rgba(255,255,255,.05); border-radius:var(--radius);
+    padding:20px; margin-bottom:16px; box-shadow:0 8px 24px rgba(0,0,0,.25);}
+  .card h2{font-size:13px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--muted); margin:0 0 16px; font-weight:600;}
+
+  /* Battery gauge */
+  .gauge-row{display:flex; align-items:center; gap:18px;}
+  .ring{width:86px; height:86px; flex:0 0 auto;}
+  .ring svg{transform:rotate(-90deg);}
+  .ring .track{stroke:var(--track);}
+  .ring .fill{stroke:var(--green); stroke-linecap:round;
+    transition:stroke-dashoffset .6s cubic-bezier(.4,0,.2,1), stroke .4s;}
+  .ring .pct{font-size:15px; font-weight:700; fill:var(--text);}
+  .gauge-meta{flex:1;}
+  .gauge-meta .big{font-size:34px; font-weight:800; line-height:1;}
+  .gauge-meta .big small{font-size:16px; color:var(--muted); font-weight:600;}
+  .gauge-meta .state{font-size:13px; color:var(--muted); margin-top:6px;}
+  .chip{display:inline-block; padding:5px 10px; border-radius:999px; font-size:12px;
+    font-weight:600; margin-top:8px;}
+
+  /* Toggle switch */
+  .switch-wrap{display:flex; flex-direction:column; align-items:center; padding:14px 0 6px;}
+  .switch{position:relative; width:210px; height:96px; cursor:pointer; user-select:none;}
+  .switch input{position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer;}
+  .switch .slider{position:absolute; inset:0; background:var(--track); border-radius:60px;
+    transition:background .35s; box-shadow:inset 0 2px 6px rgba(0,0,0,.35);}
+  .switch .slider::before{content:""; position:absolute; left:8px; top:8px; width:80px; height:80px;
+    border-radius:50%; background:#fff; transition:transform .35s cubic-bezier(.4,0,.2,1);
+    box-shadow:0 6px 16px rgba(0,0,0,.35);}
+  .switch .lbl{position:absolute; top:50%; transform:translateY(-50%); font-size:16px;
+    font-weight:800; letter-spacing:.04em; transition:.35s;}
+  .switch .lbl.off{right:26px; color:var(--muted);}
+  .switch .lbl.on{left:26px; color:transparent;}
+  .switch input:checked + .slider{background:var(--green);}
+  .switch input:checked + .slider::before{transform:translateX(114px);}
+  .switch input:checked ~ .lbl.off{color:transparent;}
+  .switch input:checked ~ .lbl.on{color:#064a28;}
+  .switch input:disabled + .slider{opacity:.55; cursor:not-allowed;}
+  .switch:active .slider::before{width:88px; height:88px;}
+
+  button{appearance:none; border:0; border-radius:14px; padding:14px 18px; font-size:15px;
+    font-weight:700; cursor:pointer; color:var(--text); transition:opacity .15s, transform .1s;}
+  button:active{transform:scale(.98);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  .btn-primary{background:var(--green); color:#053019; width:100%; box-shadow:0 6px 18px rgba(47,211,117,.25);}
+  .btn-ghost{background:var(--card2); width:100%;}
+
+  .toast{position:fixed; left:16px; right:16px; bottom:18px; z-index:50;
+    background:#232844; border:1px solid rgba(255,255,255,.08); border-radius:14px;
+    padding:14px 16px; font-size:14px; transform:translateY(140%); transition:transform .3s cubic-bezier(.2,.8,.2,1);}
+  .toast.show{transform:translateY(0);}
+  .toast.ok{border-color:rgba(47,211,117,.5); background:rgba(23,42,32,.95);}
+  .toast.err{border-color:rgba(255,90,106,.5); background:rgba(42,23,27,.95);}
+  .status-line{font-size:12px; color:var(--muted); text-align:center; margin-top:6px;}
+  .status-line .dot{display:inline-block; width:8px; height:8px; border-radius:50%;
+    background:var(--amber); margin-right:6px; vertical-align:1px;}
+  .status-line.live .dot{background:var(--green);}
+
+  .flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .flow-box{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.05);
+    border-radius:16px;padding:16px 12px;text-align:center;}
+  .flow-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;
+    font-weight:600;margin-bottom:10px;}
+  .flow-val{font-size:28px;font-weight:800;line-height:1.1;}
+  .flow-val.green{color:var(--green);}
+  .flow-val.blue{color:var(--blue);}
+  .flow-unit{font-size:11px;color:var(--muted);letter-spacing:.08em;margin-top:2px;}
+  .flow-sub{font-size:12px;color:var(--amber);margin-top:10px;font-weight:600;}
+</style>
+</head>
+<body>
+  <h1>Split AC Control</h1>
+  <p class="sub">Wireless switch · battery guarded on/off</p>
+
+  <div class="card">
+    <h2>Battery</h2>
+    <div class="gauge-row">
+      <div class="ring">
+        <svg width="86" height="86" viewBox="0 0 100 100">
+          <circle class="track" cx="50" cy="50" r="42" fill="none" stroke-width="11"/>
+          <circle id="fill" class="fill" cx="50" cy="50" r="42" fill="none" stroke-width="11"
+                  stroke-dasharray="263.9" stroke-dashoffset="263.9"/>
+          <text class="pct" id="pct" x="50" y="57" text-anchor="middle">--%</text>
+        </svg>
+      </div>
+      <div class="gauge-meta">
+        <div class="big" id="battBig">--<small>%</small></div>
+        <div class="state" id="battState">reading…</div>
+        <span class="chip" id="battChip" style="color:var(--muted);background:rgba(255,255,255,.06)">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Power Flow</h2>
+    <div class="flow-grid">
+      <div class="flow-box">
+        <div class="flow-lbl">Charging from solar</div>
+        <div class="flow-val green" id="chargeW">--</div>
+        <div class="flow-unit">W OUT</div>
+        <div class="flow-sub">solar: <span id="solarW">--</span> W</div>
+      </div>
+      <div class="flow-box">
+        <div class="flow-lbl">House usage</div>
+        <div class="flow-val blue" id="loadW">--</div>
+        <div class="flow-unit">W USED</div>
+        <div class="flow-sub">discharge: <span id="dischargeW">--</span> W</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Air Conditioner</h2>
+    <div class="switch-wrap">
+      <label class="switch">
+        <input type="checkbox" id="acSwitch" disabled>
+        <span class="slider"></span>
+        <span class="lbl on">ON</span>
+        <span class="lbl off">OFF</span>
+      </label>
+      <p style="font-size:13px;color:var(--muted);margin:10px 0 0;">Current: <b id="acCurrent">—</b></p>
+    </div>
+    <button id="refresh" class="btn-ghost" style="margin-top:14px;">Re-read battery</button>
+  </div>
+
+  <div class="status-line" id="statusLine"><span class="dot"></span><span id="statusText">connecting…</span></div>
+  <div class="toast" id="toast"></div>
+
+<script>
+  const STATE_URL = 'https://raw.githubusercontent.com/aliwadah/acstate/main/state.json';
+  const PA = 'https://aliwadah.pythonanywhere.com';
+
+  const circum = 263.9;
+  const fill = document.getElementById('fill');
+  const pct = document.getElementById('pct');
+  const battBig = document.getElementById('battBig');
+  const battState = document.getElementById('battState');
+  const battChip = document.getElementById('battChip');
+  const acSwitch = document.getElementById('acSwitch');
+  const acCurrent = document.getElementById('acCurrent');
+  const statusLine = document.getElementById('statusLine');
+  const statusText = document.getElementById('statusText');
+  const toast = document.getElementById('toast');
+  const ON_THRESHOLD = 50;
+  let busy = false;
+
+  function fmtW(w){ return (w==null) ? '--' : Math.round(w); }
+
+  function setPowerFlow(d){
+    document.getElementById('chargeW').textContent = fmtW(d.charge_w);
+    document.getElementById('loadW').textContent = fmtW(d.load_w);
+    document.getElementById('solarW').textContent = fmtW(d.solar_w);
+    document.getElementById('dischargeW').textContent = fmtW(d.discharge_w);
+  }
+
+  function setGauge(soc){
+    const s = (soc == null) ? 0 : Math.max(0, Math.min(100, soc));
+    const off = circum - (s/100)*circum;
+    fill.style.strokeDashoffset = off;
+    pct.textContent = (soc==null)?'--%':Math.round(s)+'%';
+    battBig.innerHTML = (soc==null)?'--':'<span style="font-size:14px;color:var(--muted)">SOC </span>'+Math.round(s)+'<small>%</small>';
+    let color='var(--green)' ,label='Healthy',chipColor='var(--green)',chipBg='var(--green-bg)';
+    if(s<30){color='var(--red)';label='Low battery — alert sent';chipColor='var(--red)';chipBg='var(--red-bg)';}
+    else if(s<50){color='var(--amber)';label='Below on-threshold';chipColor='var(--amber)';chipBg='rgba(255,194,75,.12)';}
+    fill.style.stroke=color;
+    battState.textContent = (soc==null)?'unavailable':label;
+    battChip.textContent = (soc==null)?'not set':label.split(' — ')[0];
+    battChip.style.color=chipColor; battChip.style.background=chipBg;
+  }
+
+  function setStatusText(t, live){
+    statusText.textContent = t;
+    statusLine.classList.toggle('live', !!live);
+  }
+
+  function showToast(msg, type){
+    toast.textContent = msg;
+    toast.className = 'toast show ' + (type||'');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=>toast.className='toast', 3200);
+  }
+
+  function acVisual(on){
+    acCurrent.textContent = (on===null)?'unknown':(on?'ON':'OFF');
+    acSwitch.checked = !!on;
+    acSwitch.disabled = false;
+  }
+
+  async function fetchState(){
+    const r = await fetch(STATE_URL + '?_=' + Date.now(), {cache:'no-store'});
+    return await r.json();
+  }
+
+  async function fetchStatus(){
+    setStatusText('refreshing…');
+    try{
+      const s = await fetchState();
+      applyStatus(s);
+    }catch(e){
+      setStatusText('offline');
+      showToast('Could not reach the data source.', 'err');
+    }
+  }
+
+  let lastUpdated = '';
+  async function forceRefresh(){
+    const btn = document.getElementById('refresh');
+    if(btn.disabled) return;
+    btn.disabled = true;
+    setStatusText('reading battery…');
+    try{
+      await fetch(PA + '/api/refresh', {method:'POST', cache:'no-store'});
+      const deadline = Date.now() + 70000;
+      while(Date.now() < deadline){
+        await new Promise(r=>setTimeout(r, 5000));
+        const s = await fetchState();
+        applyStatus(s);
+        if(s.updated && s.updated !== lastUpdated){
+          setStatusText('updated ' + ago(s.updated), true);
+          break;
+        }
+      }
+    }catch(e){
+      setStatusText('offline');
+      showToast('Could not reach the relay.', 'err');
+    }finally{ btn.disabled = false; }
+  }
+
+  function applyStatus(s){
+    if(s.updated) lastUpdated = s.updated;
+    setGauge(s.soc);
+    setPowerFlow(s);
+    if(s.ac_on != null) acVisual(s.ac_on);
+    setStatusText('updated ' + ago(s.updated), true);
+    if(!s.ok && s.pmessages && s.pmessages.length){
+      setStatusText('partial data');
+    }
+  }
+
+  function ago(u){
+    if(!u) return 'unknown time';
+    const t = new Date(u + (u.endsWith('Z') ? '' : 'Z')).getTime();
+    if(isNaN(t)) return u;
+    const s = Math.max(0, Math.round((Date.now() - t)/1000));
+    if(s < 5) return 'just now';
+    if(s < 60) return s + 's ago';
+    if(s < 3600) return Math.round(s/60) + 'min ago';
+    return Math.round(s/3600) + 'h ago';
+  }
+
+  async function changeAC(on){
+    if(busy) return;
+    busy = true; acSwitch.disabled = true;
+    try{
+      const r = await fetch(PA + (on?'/api/turn_on':'/api/turn_off'), {method:'POST', cache:'no-store'});
+      const d = await r.json();
+      showToast(d.message, d.ok?'ok':'err');
+      if(!d.ok && on){ acSwitch.checked = false; }   // refused (battery low)
+      else { acVisual(on); }
+    }catch(e){
+      acVisual(acSwitch.checked ? false : null);
+      showToast('Could not reach the relay.', 'err');
+    }finally{
+      acSwitch.disabled = false;
+      busy = false;
+    }
+    setTimeout(fetchStatus, 3000);
+  }
+
+  acSwitch.addEventListener('change', ()=>{ changeAC(acSwitch.checked); });
+  document.getElementById('refresh').addEventListener('click', forceRefresh);
+  setInterval(fetchStatus, 45000);
+  fetchStatus();
+</script>
+</body>
+</html>
