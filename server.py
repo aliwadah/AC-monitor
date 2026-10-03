@@ -430,7 +430,7 @@ def gh_request_refresh():
 # ---------------------------------------------------------------------------
 _GH_STATE_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".acmon_state_cache.json")
 _gh_cache_lock = threading.Lock()
-_CACHE_TTL = 600
+_CACHE_TTL = 90
 
 
 def _load_state_cache():
@@ -468,7 +468,8 @@ def gh_status_of(state):
 
 
 def gh_status_read():
-    """Return (state_dict_or_None, refreshed_bool). Fast path: cached state."""
+    """Return (state_dict_or_None, refreshed_bool, dispatched_bool). Fast path: cached state."""
+    dispatched = False
     with _gh_cache_lock:
         cached = _load_state_cache()
         now = time.time()
@@ -485,7 +486,8 @@ def gh_status_read():
             if now - _last_dispatch() >= 600:
                 _save_dispatch()
                 threading.Thread(target=dispatch_ac_command, args=("monitor",), daemon=True).start()
-        return (cached or {}).get("state"), refreshed
+                dispatched = True
+        return (cached or {}).get("state"), refreshed, dispatched
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +596,7 @@ def index():
         pass
     if gh_mode() and html:
         try:
-            state, _ = gh_status_read()
+            state, _, _ = gh_status_read()
             payload = json.dumps(gh_status_of(state or {}))
             html = html.replace(
                 "</head>",
@@ -608,10 +610,12 @@ def index():
 def api_status():
     if gh_mode():
         try:
-            state, _ = gh_status_read()
+            state, _, dispatched = gh_status_read()
             if not state:
                 raise RuntimeError("no state yet")
-            return jsonify(gh_status_of(state))
+            data = gh_status_of(state)
+            data["refreshing"] = dispatched
+            return jsonify(data)
         except Exception as e:  # noqa: BLE001
             return jsonify({
                 "soc": None, "ac_on": None,
@@ -702,8 +706,8 @@ def api_turn_off():
 def api_monitor():
     if gh_mode():
         try:
-            state, refreshed = gh_status_read()
-            return jsonify({"ok": True, "refreshed": refreshed, "state": state})
+            state, refreshed, dispatched = gh_status_read()
+            return jsonify({"ok": True, "refreshed": refreshed, "dispatched": dispatched, "state": state})
         except Exception as e:  # noqa: BLE001
             return jsonify({"ok": False, "message": str(e)}), 500
     try:

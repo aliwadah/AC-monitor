@@ -223,8 +223,23 @@
       setStatusText('partial data');
       showToast('Status: ' + d.error, 'err');
     } else {
-      setStatusText('updated ' + d.updated, true);
+      setStatusText('updated ' + ago(d.updated), true);
+      if(d.refreshing){
+        showToast('Reading fresh data from the clouds…', 'ok');
+        setTimeout(fetchStatus, 30000);
+      }
     }
+  }
+
+  function ago(u){
+    if(!u) return 'unknown time';
+    const t = new Date(u + (u.endsWith('Z') ? '' : 'Z')).getTime();
+    if(isNaN(t)) return u;
+    const s = Math.max(0, Math.round((Date.now() - t)/1000));
+    if(s < 5) return 'just now';
+    if(s < 60) return s + 's ago';
+    if(s < 3600) return Math.round(s/60) + 'min ago';
+    return Math.round(s/3600) + 'h ago';
   }
 
   async function changeAC(on){
