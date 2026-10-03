@@ -1,0 +1,41 @@
+name: monitor
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+    inputs:
+      power:
+        description: Manual AC command
+        required: false
+        default: monitor
+        type: choice
+        options:
+          - monitor
+          - on
+          - off
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install deps
+        run: pip install -r requirements.txt
+      - name: run monitor
+        env:
+          TCL_USER: ${{ secrets.TCL_USER }}
+          TCL_PASSWORD: ${{ secrets.TCL_PASSWORD }}
+          TCL_AC_NICKNAME: ${{ secrets.TCL_AC_NICKNAME }}
+          SISELI_USER: ${{ secrets.SISELI_USER }}
+          SISELI_PASSWORD: ${{ secrets.SISELI_PASSWORD }}
+          SISELI_DEVICE_ID: ${{ secrets.SISELI_DEVICE_ID }}
+          SISELI_APP_ID: ${{ secrets.SISELI_APP_ID }}
+          SISELI_APP_SECRET_ENC: ${{ secrets.SISELI_APP_SECRET_ENC }}
+          NTFY_SERVER: https://ntfy.sh
+          NTFY_TOPIC: solar-ac-aliwadah-7506e24b
+        run: python gh_monitor.py --mode "${{ github.event.inputs.power || 'monitor' }}" --pat "${{ secrets.GH_PAT }}"

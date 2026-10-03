@@ -6,3 +6,6 @@ __pycache__/
 
 # Local runtime logs
 *.log
+
+# Runtime artifacts
+state.json
