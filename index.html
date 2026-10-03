@@ -244,6 +244,7 @@
 
   acSwitch.addEventListener('change', ()=>{ changeAC(acSwitch.checked); });
   document.getElementById('refresh').addEventListener('click', fetchStatus);
+  setInterval(fetchStatus, 90000);
   fetchStatus();
 </script>
 </body>
