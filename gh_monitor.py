@@ -87,10 +87,15 @@ def main():
     guard = None
     messages = []
 
+    flow = {}
     try:
         if mode == "monitor":
             soc, ac_on = server.monitor_once()
             messages.append("monitor pass done")
+            try:
+                flow = server.read_power_flow()
+            except Exception as e:  # noqa: BLE001
+                messages.append(f"flow: {e}")
         elif mode == "on":
             soc = server.read_battery_soc()
             if soc < server.ON_THRESHOLD:
@@ -115,6 +120,10 @@ def main():
             "ok": True,
             "soc": soc,
             "ac_on": ac_on,
+            "charge_w": flow.get("charge_w"),
+            "discharge_w": flow.get("discharge_w"),
+            "load_w": flow.get("load_w"),
+            "solar_w": flow.get("solar_w"),
             "guard": guard,
             "updated": utcnow(),
             "pmessages": messages,
@@ -127,6 +136,10 @@ def main():
             "ok": False,
             "soc": soc,
             "ac_on": ac_on,
+            "charge_w": flow.get("charge_w"),
+            "discharge_w": flow.get("discharge_w"),
+            "load_w": flow.get("load_w"),
+            "solar_w": flow.get("solar_w"),
             "guard": guard,
             "error": str(e),
             "updated": utcnow(),

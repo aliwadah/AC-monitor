@@ -86,6 +86,17 @@ TCL_AC_NICKNAME = os.getenv("TCL_AC_NICKNAME", "").strip()
 PORT = int(_num_env("PORT", 8000))
 HOST = os.getenv("HOST", "0.0.0.0")
 
+# GitHub-backed mode (used on hosts where the battery/AC cloud APIs block
+# datacenter IPs, e.g. PythonAnywhere). When GITHUB_PAT is set:
+#   * status comes from the public state file refreshed by the GH Actions monitor
+#   * ON/OFF commands are relayed to a GH Actions workflow_dispatch
+GITHUB_PAT = os.getenv("GITHUB_PAT", "").strip()
+GH_REPO = os.getenv("GH_REPO", "aliwadah/AC-monitor")
+GH_WORKFLOW = os.getenv("GH_WORKFLOW", "monitor.yml")
+GH_STATE_URL = os.getenv(
+    "GH_STATE_URL",
+    "https://raw.githubusercontent.com/aliwadah/acstate/HEAD/state.json")
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("solar-ac-local")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -342,6 +353,66 @@ class TclClient:
 
 
 # ---------------------------------------------------------------------------
+# GitHub-backed status + command relay (see GH constants above)
+# ---------------------------------------------------------------------------
+def gh_mode():
+    return bool(GITHUB_PAT)
+
+
+def _gh_request(url, method="GET", data=None, pat=""):
+    headers = {"Accept": "application/json", "User-Agent": "acmon"}
+    if pat:
+        headers["Authorization"] = f"token {pat}"
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    r = httpx.request(method, url, content=json.dumps(data).encode() if data is not None else None,
+                      headers=headers, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"GitHub API {method} {url}: HTTP {r.status_code} {r.text[:150]}")
+    return r
+
+
+def fetch_gh_state():
+    """Latest state.json published by the GitHub Actions monitor."""
+    urls = [GH_STATE_URL, f"https://api.github.com/repos/aliwadah/acstate/contents/state.json"]
+    for u in urls:
+        try:
+            headers = {"Accept": "application/vnd.github+json", "User-Agent": "acmon"}
+            r = httpx.get(u, headers=headers, timeout=30)
+            if r.status_code != 200:
+                continue
+            if "contents/state.json" in u:
+                return json.loads(base64.b64decode(r.json()["content"]).decode("utf-8"))
+            return r.json()
+        except Exception:  # noqa: BLE001
+            continue
+    raise RuntimeError(f"Could not fetch AC state from GitHub (tried {len(urls)} URLs).")
+
+
+def dispatch_ac_command(mode):
+    url = f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/dispatches"
+    _gh_request(url, method="POST", data={"ref": "main", "inputs": {"power": mode}}, pat=GITHUB_PAT)
+
+
+def gh_status():
+    state = fetch_gh_state()
+    err = (state.get("error") or "") if not state.get("ok") else ""
+    if state.get("guard"):
+        err = (err + "; " if err else "") + state["guard"]
+    return {
+        "soc": state.get("soc"),
+        "ac_on": state.get("ac_on"),
+        "charge_w": state.get("charge_w"),
+        "discharge_w": state.get("discharge_w"),
+        "load_w": state.get("load_w"),
+        "solar_w": state.get("solar_w"),
+        "on_threshold": ON_THRESHOLD,
+        "error": err or None,
+        "updated": state.get("updated") or "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # ntfy notifications
 # ---------------------------------------------------------------------------
 def send_notification(title, msg, priority=3):
@@ -444,6 +515,16 @@ def index():
 
 @app.route("/api/status")
 def api_status():
+    if gh_mode():
+        try:
+            return jsonify(gh_status())
+        except Exception as e:  # noqa: BLE001
+            return jsonify({
+                "soc": None, "ac_on": None,
+                "charge_w": None, "discharge_w": None, "load_w": None, "solar_w": None,
+                "on_threshold": ON_THRESHOLD,
+                "error": f"state: {e}", "updated": "",
+            }), 502
     soc = None
     flow = {"charge_w": None, "discharge_w": None, "load_w": None, "solar_w": None}
     ac_on = None
@@ -475,6 +556,24 @@ def api_status():
 
 @app.route("/api/turn_on", methods=["POST"])
 def api_turn_on():
+    if gh_mode():
+        try:
+            state = fetch_gh_state()
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "message": f"Status unavailable: {e}"}), 503
+        soc = state.get("soc")
+        if soc is None:
+            return jsonify({"ok": False,
+                            "message": "Battery state not available yet — try again shortly."}), 503
+        if soc < ON_THRESHOLD:
+            return jsonify({"ok": False,
+                            "message": f"Battery {soc:.1f}% is below {ON_THRESHOLD:.0f}% — AC not turned on."})
+        try:
+            dispatch_ac_command("on")
+            return jsonify({"ok": True,
+                            "message": f"Battery {soc:.1f}% — ON command sent. AC turns on shortly."})
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "message": f"Command relay failed: {e}"}), 500
     try:
         soc = read_battery_soc()
     except Exception as e:  # noqa: BLE001
@@ -492,6 +591,12 @@ def api_turn_on():
 
 @app.route("/api/turn_off", methods=["POST"])
 def api_turn_off():
+    if gh_mode():
+        try:
+            dispatch_ac_command("off")
+            return jsonify({"ok": True, "message": "OFF command sent. AC turns off shortly."})
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "message": f"Command relay failed: {e}"}), 500
     try:
         TclClient().set_power(False)
         return jsonify({"ok": True, "message": "AC turned OFF."})
@@ -501,6 +606,11 @@ def api_turn_off():
 
 @app.route("/api/monitor")
 def api_monitor():
+    if gh_mode():
+        try:
+            return jsonify({"ok": True, "state": fetch_gh_state()})
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "message": str(e)}), 500
     try:
         result = run_monitor_if_due()
         if result is None:
