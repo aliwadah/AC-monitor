@@ -158,6 +158,13 @@ def main():
     if not args.skip_publish and args.pat:
         publish_state(state, args.pat)
 
+    # Wake the PythonAnywhere page so it doesn't sleep-cold between runs.
+    try:
+        import httpx
+        httpx.get("https://aliwadah.pythonanywhere.com/api/monitor", timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+
     sys.exit(0 if state["ok"] else 1)
 
 

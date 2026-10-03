@@ -39,7 +39,7 @@ try:
 except ImportError:
     pass
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request
 from waitress import serve
 
 # ---------------------------------------------------------------------------
@@ -586,7 +586,22 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return send_from_directory(app.root_path, "index.html")
+    html = ""
+    try:
+        with open(os.path.join(app.root_path, "index.html"), encoding="utf-8") as f:
+            html = f.read()
+    except Exception:  # noqa: BLE001
+        pass
+    if gh_mode() and html:
+        try:
+            state, _ = gh_status_read()
+            payload = json.dumps(gh_status_of(state or {}))
+            html = html.replace(
+                "</head>",
+                f"<script>window.__AC_STATE__={payload};</script></head>", 1)
+        except Exception:  # noqa: BLE001
+            pass
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/status")

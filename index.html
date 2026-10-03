@@ -208,18 +208,22 @@
     try{
       const r = await fetch('/api/status', {cache:'no-store'});
       const d = await r.json();
-      setGauge(d.soc);
-      setPowerFlow(d);
-      if(d.ac_on != null) acVisual(d.ac_on);
-      if(d.error){
-        setStatusText('partial data');
-        showToast('Status: ' + d.error, 'err');
-      } else {
-        setStatusText('updated ' + d.updated, true);
-      }
+      applyStatus(d);
     }catch(e){
       setStatusText('offline');
       showToast('Could not reach server.', 'err');
+    }
+  }
+
+  function applyStatus(d){
+    setGauge(d.soc);
+    setPowerFlow(d);
+    if(d.ac_on != null) acVisual(d.ac_on);
+    if(d.error){
+      setStatusText('partial data');
+      showToast('Status: ' + d.error, 'err');
+    } else {
+      setStatusText('updated ' + d.updated, true);
     }
   }
 
@@ -244,6 +248,7 @@
 
   acSwitch.addEventListener('change', ()=>{ changeAC(acSwitch.checked); });
   document.getElementById('refresh').addEventListener('click', fetchStatus);
+  if(window.__AC_STATE__){ applyStatus(window.__AC_STATE__); }
   setInterval(fetchStatus, 90000);
   fetchStatus();
 </script>
