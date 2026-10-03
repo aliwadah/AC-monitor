@@ -703,6 +703,19 @@ def api_turn_off():
         return jsonify({"ok": False, "message": f"AC control failed: {e}"}), 500
 
 
+@app.route("/api/refresh", methods=["POST"])
+def api_refresh():
+    if not gh_mode():
+        return jsonify({"ok": False, "message": "not gh-mode"}), 400
+    now = time.time()
+    since = now - _last_dispatch()
+    if since < 15:
+        return jsonify({"ok": True, "started": False, "since": int(since)})
+    _save_dispatch()
+    threading.Thread(target=dispatch_ac_command, args=("monitor",), daemon=True).start()
+    return jsonify({"ok": True, "started": True})
+
+
 @app.route("/api/monitor")
 def api_monitor():
     if gh_mode():
