@@ -166,18 +166,20 @@ def main():
         except Exception:  # noqa: BLE001
             pass
 
-    # Self-sustain 24/7: only ONE run per interval may chain the next (ask the
-    # PythonAnywhere relay for the reserve), so overlapping runs never cascade.
+    # Self-sustain 24/7: exactly one run per interval chains the next. The relay
+    # grants one reservation; if this run doesn't hold it, wait for the window
+    # and reclaim it in case the scheduled run died (self-healing).
     chain_min = int(os.environ.get("ACMON_CHAIN_MIN", "5"))
     chain_int = max(60, chain_min * 60)
     if args.mode == "monitor" and not args.skip_publish and args.pat:
         try:
-            req = urllib.request.Request(
-                f"https://aliwadah.pythonanywhere.com/api/tick?interval={chain_int}",
-                headers={"User-Agent": "acmon"})
-            d = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
-            if d.get("reserved"):
-                time.sleep(max(0, min(int(d.get("remaining", chain_int)), chain_int)))
+            def _tick():
+                req = urllib.request.Request(
+                    f"https://aliwadah.pythonanywhere.com/api/tick?interval={chain_int}",
+                    headers={"User-Agent": "acmon"})
+                return json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+
+            def _chain():
                 url = "https://api.github.com/repos/aliwadah/AC-monitor/actions/workflows/monitor.yml/dispatches"
                 body = json.dumps({"ref": "main", "inputs": {"power": "monitor"}}).encode()
                 req = urllib.request.Request(
@@ -190,8 +192,21 @@ def main():
                     })
                 resp = urllib.request.urlopen(req, timeout=30)
                 print(f"[gh_monitor] chained next run (HTTP {resp.status})")
+
+            d = _tick()
+            if d.get("reserved"):
+                time.sleep(max(0, min(int(d.get("remaining", chain_int)), chain_int)))
+                _chain()
             else:
-                print(f"[gh_monitor] not scheduler run, skipping chain (retry in {d.get('remaining')}s)")
+                wait = min(int(d.get("remaining", chain_int)) + 5, chain_int + 10)
+                print(f"[gh_monitor] not scheduler run; will retry in {wait}s")
+                time.sleep(wait)
+                d2 = _tick()
+                if d2.get("reserved"):
+                    time.sleep(max(0, min(int(d2.get("remaining", chain_int)), chain_int)))
+                    _chain()
+                else:
+                    print("[gh_monitor] another run owns scheduling; skipping")
         except Exception as e:  # noqa: BLE001
             print(f"[gh_monitor] chain failed: {e}")
 
