@@ -166,25 +166,32 @@ def main():
         except Exception:  # noqa: BLE001
             pass
 
-    # Self-sustain 24/7: in auto-monitor mode, wait ~5 minutes then chain the
-    # next run (public repo = free Actions minutes, so monitoring keeps going
-    # even when nobody opens the page).
+    # Self-sustain 24/7: only ONE run per interval may chain the next (ask the
+    # PythonAnywhere relay for the reserve), so overlapping runs never cascade.
     chain_min = int(os.environ.get("ACMON_CHAIN_MIN", "5"))
-    if args.mode == "monitor" and not args.skip_publish and chain_min > 0:
+    chain_int = max(60, chain_min * 60)
+    if args.mode == "monitor" and not args.skip_publish and args.pat:
         try:
-            time.sleep(chain_min * 60)
-            url = f"https://api.github.com/repos/aliwadah/AC-monitor/actions/workflows/monitor.yml/dispatches"
-            body = json.dumps({"ref": "main", "inputs": {"power": "monitor"}}).encode()
             req = urllib.request.Request(
-                url, data=body, method="POST",
-                headers={
-                    "Authorization": f"token {args.pat}",
-                    "Accept": "application/vnd.github+json",
-                    "Content-Type": "application/json",
-                    "User-Agent": "acmon",
-                })
-            resp = urllib.request.urlopen(req, timeout=30)
-            print(f"[gh_monitor] chained next run (HTTP {resp.status})")
+                f"https://aliwadah.pythonanywhere.com/api/tick?interval={chain_int}",
+                headers={"User-Agent": "acmon"})
+            d = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+            if d.get("reserved"):
+                time.sleep(max(0, min(int(d.get("remaining", chain_int)), chain_int)))
+                url = "https://api.github.com/repos/aliwadah/AC-monitor/actions/workflows/monitor.yml/dispatches"
+                body = json.dumps({"ref": "main", "inputs": {"power": "monitor"}}).encode()
+                req = urllib.request.Request(
+                    url, data=body, method="POST",
+                    headers={
+                        "Authorization": f"token {args.pat}",
+                        "Accept": "application/vnd.github+json",
+                        "Content-Type": "application/json",
+                        "User-Agent": "acmon",
+                    })
+                resp = urllib.request.urlopen(req, timeout=30)
+                print(f"[gh_monitor] chained next run (HTTP {resp.status})")
+            else:
+                print(f"[gh_monitor] not scheduler run, skipping chain (retry in {d.get('remaining')}s)")
         except Exception as e:  # noqa: BLE001
             print(f"[gh_monitor] chain failed: {e}")
 

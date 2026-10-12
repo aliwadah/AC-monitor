@@ -396,6 +396,7 @@ def dispatch_ac_command(mode):
 
 
 _GH_DISPATCH_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_dispatch")
+_CHAIN_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_chain")
 _DISPATCH_INTERVAL = 15
 
 
@@ -695,6 +696,35 @@ def api_turn_off():
         return jsonify({"ok": True, "message": "AC turned OFF."})
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "message": f"AC control failed: {e}"}), 500
+
+
+@app.route("/api/tick")
+def api_tick():
+    """Single-scheduler gate: returns reserved=True for the one caller per
+    interval that may chain the next run; everyone else gets reserved=False."""
+    if not gh_mode():
+        return jsonify({"reserved": False}), 400
+    try:
+        interval = int(request.args.get("interval", 300))
+    except Exception:  # noqa: BLE001
+        interval = 300
+    interval = max(60, min(1800, interval))
+    now = time.time()
+    with _gh_cache_lock:
+        try:
+            with open(_CHAIN_FILE) as f:
+                last = float(f.read().strip() or 0)
+        except Exception:  # noqa: BLE001
+            last = 0.0
+        remaining = last + interval - now
+        if remaining <= 0:
+            try:
+                with open(_CHAIN_FILE, "w") as f:
+                    f.write(str(now))
+            except Exception:  # noqa: BLE001
+                pass
+            return jsonify({"reserved": True, "remaining": interval})
+        return jsonify({"reserved": False, "remaining": int(remaining)})
 
 
 @app.route("/api/refresh", methods=["POST"])
