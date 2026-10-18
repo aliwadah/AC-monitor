@@ -74,6 +74,31 @@ def publish_state(state, pat):
     return False
 
 
+def _set_and_confirm(tcl, want, messages, attempts=5, delay=1.5):
+    """Command the AC, then poll the shadow until the device confirms.
+
+    The shadow's 'reported' value lags the publish by seconds; reading it once
+    immediately after set_power returns the PREVIOUS state, which would publish
+    a wrong ac_on and leave the web page waiting for a refresh that never comes.
+    """
+    tcl.set_power(want)
+    ac_on = None
+    last_err = None
+    for _ in range(attempts):
+        try:
+            ac_on = tcl.get_power_switch()
+            last_err = None
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            ac_on = None
+        if ac_on == want:
+            break
+        time.sleep(delay)
+    if last_err is not None and ac_on is None:
+        messages.append(f"state read: {last_err}")
+    return ac_on
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["monitor", "on", "off"], required=True)
@@ -127,13 +152,13 @@ def main():
             if soc < server.ON_THRESHOLD:
                 guard = f"battery_too_low {soc:.1f}%"
                 messages.append("denied: battery below threshold")
+                try:
+                    ac_on = tcl.get_power_switch()
+                except Exception as e:  # noqa: BLE001
+                    messages.append(f"state read: {e}")
             else:
-                tcl.set_power(True)
+                ac_on = _set_and_confirm(tcl, True, messages)
                 messages.append("AC turned ON")
-            try:
-                ac_on = tcl.get_power_switch()
-            except Exception as e:  # noqa: BLE001
-                messages.append(f"state read: {e}")
         else:  # off
             try:
                 soc = server.read_battery_soc()
@@ -141,12 +166,8 @@ def main():
             except Exception as e:  # noqa: BLE001
                 messages.append(f"soc read: {e}")
             warm.join(60)
-            tcl.set_power(False)
+            ac_on = _set_and_confirm(tcl, False, messages)
             messages.append("AC turned OFF")
-            try:
-                ac_on = tcl.get_power_switch()
-            except Exception as e:  # noqa: BLE001
-                messages.append(f"state read: {e}")
 
         state = {
             "ok": True,
