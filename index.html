@@ -275,16 +275,32 @@
       const r = await fetch(on?'/api/turn_on':'/api/turn_off', {method:'POST', cache:'no-store'});
       const d = await r.json();
       showToast(d.message, d.ok?'ok':'err');
-      if(!d.ok && on){ acSwitch.checked = false; }   // refused (battery low)
-      else { acVisual(on); }
+      if(!d.ok && on){ acSwitch.checked = false; return; }   // refused (battery low)
+      acVisual(on);
+      setStatusText('sending command…');
+      // Poll until the worker confirms the new AC state (usually 20-40s).
+      const deadline = Date.now() + 90000;
+      while(Date.now() < deadline){
+        await new Promise(r=>setTimeout(r, 2000));
+        try{
+          const rr = await fetch('/api/status', {cache:'no-store'});
+          const s = await rr.json();
+          if(s.ac_on === on){
+            applyStatus(s);
+            setStatusText('AC is ' + (on?'ON':'OFF'), true);
+            showToast('AC is now ' + (on?'ON':'OFF') + '.', 'ok');
+            return;
+          }
+        }catch(e){ /* keep polling */ }
+      }
+      showToast('Command sent — status will update shortly.', 'ok');
     }catch(e){
-      acVisual(acSwitch.checked ? false : d?.ac_on);
       showToast('Request failed.', 'err');
     }finally{
       acSwitch.disabled = false;
       busy = false;
     }
-    setTimeout(fetchStatus, 1500);
+    fetchStatus();
   }
 
   acSwitch.addEventListener('change', ()=>{ changeAC(acSwitch.checked); });

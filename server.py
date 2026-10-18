@@ -459,17 +459,17 @@ def gh_status_of(state):
     }
 
 
-def gh_status_read():
+def gh_status_read(force=False):
     """Return (state_dict_or_None, refreshed_bool). Reads latest published state,
-    refreshing the local cache when stale. Does NOT spawn new runs — the GitHub
-    worker self-chains at its own cadence, and only the manual 'Re-read battery'
-    button (POST /api/refresh) dispatches a run."""
+    refreshing the local cache when stale (or always when force=True). Does NOT
+    spawn new runs — the GitHub worker self-chains at its own cadence, and only
+    the manual 'Re-read battery' button (POST /api/refresh) dispatches a run."""
     with _gh_cache_lock:
         cached = _load_state_cache()
         now = time.time()
         fresh = cached is not None and now - cached.get("fetched_at", 0) < _CACHE_TTL
         refreshed = False
-        if not fresh:
+        if force or not fresh:
             try:
                 state = fetch_gh_state()
                 _save_state_cache(state, now)
@@ -651,23 +651,23 @@ def api_status():
 @app.route("/api/turn_on", methods=["POST"])
 def api_turn_on():
     if gh_mode():
-        try:
-            state = fetch_gh_state()
-        except Exception as e:  # noqa: BLE001
-            return jsonify({"ok": False, "message": f"Status unavailable: {e}"}), 503
-        soc = state.get("soc")
-        if soc is None:
-            return jsonify({"ok": False,
-                            "message": "Battery state not available yet — try again shortly."}), 503
-        if soc < ON_THRESHOLD:
+        # Use the local cache only (no blocking GitHub fetch) — the GitHub run
+        # re-reads the battery and enforces the threshold itself.
+        cached = _load_state_cache() or {}
+        state = cached.get("state") or {}
+        soc = state.get("soc") if time.time() - cached.get("fetched_at", 0) < 600 else None
+        if soc is not None and soc < ON_THRESHOLD:
             return jsonify({"ok": False,
                             "message": f"Battery {soc:.1f}% is below {ON_THRESHOLD:.0f}% — AC not turned on."})
         try:
             dispatch_ac_command("on")
-            return jsonify({"ok": True,
-                            "message": f"Battery {soc:.1f}% — ON command sent. AC turns on shortly."})
         except Exception as e:  # noqa: BLE001
             return jsonify({"ok": False, "message": f"Command relay failed: {e}"}), 500
+        if soc is None:
+            return jsonify({"ok": True,
+                            "message": "ON command sent. AC turns on shortly."})
+        return jsonify({"ok": True,
+                        "message": f"Battery {soc:.1f}% — ON command sent. AC turns on shortly."})
     try:
         soc = read_battery_soc()
     except Exception as e:  # noqa: BLE001
@@ -743,8 +743,11 @@ def api_refresh():
 @app.route("/api/monitor")
 def api_monitor():
     if gh_mode():
+        # Workers ping this right after publishing state -> force-refresh the
+        # cache so the page shows the new numbers immediately.
+        force = request.args.get("fresh") in ("1", "true")
         try:
-            state, refreshed = gh_status_read()
+            state, refreshed = gh_status_read(force=force)
             return jsonify({"ok": True, "refreshed": refreshed, "state": state})
         except Exception as e:  # noqa: BLE001
             return jsonify({"ok": False, "message": str(e)}), 500

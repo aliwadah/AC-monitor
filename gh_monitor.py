@@ -161,11 +161,12 @@ def main():
     if not args.skip_publish and args.pat:
         publish_state(state, args.pat)
 
-    # Wake the PythonAnywhere relay so it doesn't sleep-cold between runs.
+    # Wake the PythonAnywhere relay with fresh data so it doesn't serve stale
+    # numbers right after we publish.
     if not args.skip_publish:
         try:
             import httpx
-            httpx.get("https://aliwadah.pythonanywhere.com/api/monitor", timeout=30)
+            httpx.get("https://aliwadah.pythonanywhere.com/api/monitor?fresh=1", timeout=30)
         except Exception:  # noqa: BLE001
             pass
 
