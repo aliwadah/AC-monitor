@@ -46,29 +46,32 @@ def publish_state(state, pat):
         "Accept": "application/vnd.github+json",
         "User-Agent": "acmon",
     }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        sha = json.loads(resp.read().decode()).get("sha")
-    except Exception as e:
-        print(f"[gh_monitor] could not fetch current state sha: {e}")
+    body = json.dumps(state).encode()
+    for attempt in range(4):
         sha = None
-    payload = {
-        "message": f"state update {utcnow()}",
-        "content": base64.b64encode(json.dumps(state).encode()).decode(),
-    }
-    if sha:
-        payload["sha"] = sha
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
-                                 headers={**headers, "Content-Type": "application/json"},
-                                 method="PUT")
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-        print(f"[gh_monitor] published state (HTTP {resp.status})")
-        return True
-    except Exception as e:
-        print(f"[gh_monitor] publish failed: {e}")
-        return False
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            sha = json.loads(resp.read().decode()).get("sha")
+        except Exception as e:
+            print(f"[gh_monitor] could not fetch current state sha: {e}")
+        payload = {
+            "message": f"state update {utcnow()}",
+            "content": base64.b64encode(body).decode(),
+        }
+        if sha:
+            payload["sha"] = sha
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={**headers, "Content-Type": "application/json"},
+                                     method="PUT")
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            print(f"[gh_monitor] published state (HTTP {resp.status})")
+            return True
+        except Exception as e:
+            print(f"[gh_monitor] publish failed (attempt {attempt + 1}): {e}")
+            time.sleep(2 + attempt * 2)
+    return False
 
 
 def main():

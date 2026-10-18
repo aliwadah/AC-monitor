@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: monitor
+  group: ${{ (github.event.inputs.power == 'on' || github.event.inputs.power == 'off') && 'ac-command' || 'monitor' }}
   cancel-in-progress: false
 jobs:
   run:
