@@ -40,7 +40,6 @@ except ImportError:
     pass
 
 from flask import Flask, Response, jsonify, request
-from waitress import serve
 
 # ---------------------------------------------------------------------------
 # Config (from .env / environment)
@@ -131,7 +130,27 @@ def _iot_headers(body_bytes):
             "IOT-Open-Body-Hash": body_hash, "IOT-Open-Sign": sig}
 
 
-def _fetch_siseli_fields():
+# One Siseli login serves every field read within 30s: a monitor pass (soc +
+# flow) and the button path (soc + flow) share a single login+state fetch, which
+# cuts ~2-3s off every GitHub Actions run.
+_SISELI_FIELDS_CACHE = {"at": 0.0, "fields": None}
+_SISELI_FIELDS_LOCK = threading.Lock()
+
+
+def _fetch_siseli_fields(force=False):
+    """Login to Siseli and return the live device 'fields' dict (cached 30s)."""
+    with _SISELI_FIELDS_LOCK:
+        if (not force and _SISELI_FIELDS_CACHE["fields"] is not None
+                and time.time() - _SISELI_FIELDS_CACHE["at"] < 30):
+            return _SISELI_FIELDS_CACHE["fields"]
+    fields = _fetch_siseli_fields_live()
+    with _SISELI_FIELDS_LOCK:
+        _SISELI_FIELDS_CACHE["fields"] = fields
+        _SISELI_FIELDS_CACHE["at"] = time.time()
+    return fields
+
+
+def _fetch_siseli_fields_live():
     """Login to Siseli and return the live device 'fields' dict."""
     if not SISELI_USER:
         raise RuntimeError("Siseli login: SISELI_USER is empty (missing env on host).")
@@ -278,11 +297,19 @@ def jwt_sub(jwt_token):
 
 
 class TclClient:
-    """Authenticates to TCL, finds the AC, and reads/sets its shadow power state."""
+    """Authenticates to TCL, finds the AC, and reads/sets its shadow power state.
+
+    The auth chain (login -> cloud_url -> refresh_tokens -> get_things ->
+    cognito) runs ONCE per client and the resulting session is reused for every
+    set/get call — previously each call re-ran the whole chain, which doubled
+    the command latency on the GitHub runner.
+    """
 
     def __init__(self):
         self.ac_id = None
         self.region = None
+        self._cognito = None
+        self._iot_client = None
 
     def _auth_chain(self):
         auth = tcl_auth()
@@ -303,17 +330,17 @@ class TclClient:
         aws_region = urls.get("cloud_region") or "ap-southeast-1"
         return ac_id, aws_region, tokens["cognito"]
 
-    def _iot(self):
+    def _build_iot(self):
         if self.ac_id is None:
             ac_id, region, cognito = self._auth_chain()
-            self.ac_id, self.region = ac_id, region
-        else:
+            self.ac_id, self.region, self._cognito = ac_id, region, cognito
+        elif self._cognito is None:
             _, region, cognito = self._auth_chain()
-            self.region = region
-        identity_pool = jwt_sub(cognito)
-        r = httpx.post(f"https://cognito-identity.{region}.amazonaws.com/",
+            self.region, self._cognito = region, cognito
+        identity_pool = jwt_sub(self._cognito)
+        r = httpx.post(f"https://cognito-identity.{self.region}.amazonaws.com/",
                        json={"IdentityId": identity_pool,
-                             "Logins": {"cognito-identity.amazonaws.com": cognito}},
+                             "Logins": {"cognito-identity.amazonaws.com": self._cognito}},
                        headers={"User-Agent": "aws-sdk-android/2.22.6",
                                 "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity",
                                 "content-type": "application/x-amz-json-1.1"}, timeout=20)
@@ -321,34 +348,54 @@ class TclClient:
         if r.status_code != 200:
             raise RuntimeError(f"TCL cognito failed: {aws}")
         creds = aws["Credentials"]
-        return boto3.client("iot-data", region_name=region,
+        return boto3.client("iot-data", region_name=self.region,
                             aws_access_key_id=creds["AccessKeyId"],
                             aws_secret_access_key=creds["SecretKey"],
                             aws_session_token=creds["SessionToken"])
 
+    def warmup(self):
+        """Authenticate now so later set/get calls reuse the session."""
+        if self._iot_client is None:
+            self._iot_client = self._build_iot()
+        return self
+
+    def _with_iot(self, op):
+        self.warmup()
+        try:
+            return op(self._iot_client)
+        except Exception:
+            # Session may have gone stale mid-process; rebuild it once and retry.
+            self._iot_client = None
+            self._cognito = None
+            self.warmup()
+            return op(self._iot_client)
+
     def get_power_switch(self):
         """Return True/False/None for the AC's current reported power."""
-        iot = self._iot()
-        resp = iot.get_thing_shadow(thingName=self.ac_id)
-        shadow = json.loads(resp["payload"].read().decode("utf-8"))
-        reported = (shadow.get("state") or {}).get("reported") or {}
-        val = reported.get("powerSwitch")
-        if val is None:
-            delta = (shadow.get("state") or {}).get("delta") or {}
-            val = delta.get("powerSwitch")
-        if val is None:
-            return None
-        return int(val) == 1
+        def op(iot):
+            resp = iot.get_thing_shadow(thingName=self.ac_id)
+            shadow = json.loads(resp["payload"].read().decode("utf-8"))
+            reported = (shadow.get("state") or {}).get("reported") or {}
+            val = reported.get("powerSwitch")
+            if val is None:
+                delta = (shadow.get("state") or {}).get("delta") or {}
+                val = delta.get("powerSwitch")
+            if val is None:
+                return None
+            return int(val) == 1
+        return self._with_iot(op)
 
     def set_power(self, on: bool):
-        iot = self._iot()
         desired = {"powerSwitch": 1 if on else 0}
         if on:
             desired.update(AC_PRESET)
         payload = json.dumps({"state": {"desired": desired},
                               "clientToken": f"mobile_{int(time.time())}"})
         topic = f"$aws/things/{self.ac_id}/shadow/update"
-        iot.publish(topic=topic, qos=1, payload=payload)
+
+        def op(iot):
+            iot.publish(topic=topic, qos=1, payload=payload)
+        self._with_iot(op)
         log.info("Sent AC %s (%s)%s", "ON" if on else "OFF", self.ac_id,
                  " with preset" if on else "")
 
@@ -393,6 +440,17 @@ def fetch_gh_state():
 def dispatch_ac_command(mode):
     url = f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/dispatches"
     _gh_request(url, method="POST", data={"ref": "main", "inputs": {"power": mode}}, pat=GITHUB_PAT)
+
+
+def dispatch_ac_command_async(mode):
+    """Fire the GitHub dispatch in the background so the button responds in
+    <0.5s instead of waiting for the GitHub API round trip (~2-3s)."""
+    def _run():
+        try:
+            dispatch_ac_command(mode)
+        except Exception as e:  # noqa: BLE001
+            log.warning("AC dispatch (%s) failed: %s", mode, e)
+    threading.Thread(target=_run, daemon=True).start()
 
 
 _GH_DISPATCH_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_dispatch")
@@ -509,9 +567,10 @@ _MONITOR_STATE = {"last_low_alert": None}
 _MONITOR_TIMESTAMP_FILE = os.path.join(os.path.expanduser("~"), ".acmon_last_pass")
 
 
-def monitor_once():
+def monitor_once(tcl=None):
     soc = read_battery_soc()
-    tcl = TclClient()
+    if tcl is None:
+        tcl = TclClient()
     ac_on = tcl.get_power_switch()
     log.info("Monitor: battery %.1f%%, AC on=%s", soc, ac_on)
 
@@ -659,10 +718,7 @@ def api_turn_on():
         if soc is not None and soc < ON_THRESHOLD:
             return jsonify({"ok": False,
                             "message": f"Battery {soc:.1f}% is below {ON_THRESHOLD:.0f}% — AC not turned on."})
-        try:
-            dispatch_ac_command("on")
-        except Exception as e:  # noqa: BLE001
-            return jsonify({"ok": False, "message": f"Command relay failed: {e}"}), 500
+        dispatch_ac_command_async("on")
         if soc is None:
             return jsonify({"ok": True,
                             "message": "ON command sent. AC turns on shortly."})
@@ -686,11 +742,8 @@ def api_turn_on():
 @app.route("/api/turn_off", methods=["POST"])
 def api_turn_off():
     if gh_mode():
-        try:
-            dispatch_ac_command("off")
-            return jsonify({"ok": True, "message": "OFF command sent. AC turns off shortly."})
-        except Exception as e:  # noqa: BLE001
-            return jsonify({"ok": False, "message": f"Command relay failed: {e}"}), 500
+        dispatch_ac_command_async("off")
+        return jsonify({"ok": True, "message": "OFF command sent. AC turns off shortly."})
     try:
         TclClient().set_power(False)
         return jsonify({"ok": True, "message": "AC turned OFF."})
@@ -777,4 +830,5 @@ if __name__ == "__main__":
     log.info("Server running on http://%s:%s", host_ip or "localhost", PORT)
     if host_ip:
         log.info("Open on your phone (same Wi-Fi): http://%s:%s", host_ip, PORT)
+    from waitress import serve
     serve(app, host=HOST, port=PORT, threads=8)

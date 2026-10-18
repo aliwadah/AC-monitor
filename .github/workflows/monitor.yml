@@ -25,11 +25,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: "3.11"
           cache: pip
+      - uses: actions/cache@v4
+        id: venv
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('requirements.txt') }}
       - name: install deps
-        run: pip install -r requirements.txt
+        run: |
+          if [ ! -x .venv/bin/python ] || ! .venv/bin/python -c "import flask, boto3, httpx, jwt, Crypto, dotenv, waitress" 2>/dev/null; then
+            rm -rf .venv
+            python -m venv .venv
+            .venv/bin/python -m pip install --quiet -r requirements.txt
+          fi
       - name: run monitor
         env:
           TCL_USER: ${{ secrets.TCL_USER }}
@@ -42,4 +53,4 @@ jobs:
           SISELI_APP_SECRET_ENC: ${{ secrets.SISELI_APP_SECRET_ENC }}
           NTFY_SERVER: https://ntfy.sh
           NTFY_TOPIC: solar-ac-aliwadah-7506e24b
-        run: python gh_monitor.py --mode "${{ github.event.inputs.power || 'monitor' }}" --pat "${{ secrets.GH_PAT }}"
+        run: .venv/bin/python gh_monitor.py --mode "${{ github.event.inputs.power || 'monitor' }}" --pat "${{ secrets.GH_PAT }}"

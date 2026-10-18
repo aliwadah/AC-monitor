@@ -84,6 +84,8 @@ def main():
 
     import server
 
+    import threading
+
     mode = args.mode
     soc = None
     ac_on = None
@@ -91,9 +93,25 @@ def main():
     messages = []
 
     flow = {}
+    # Start the TCL auth chain immediately, in parallel with the Siseli battery
+    # read — the two cloud calls don't depend on each other, so the run pays
+    # max() instead of sum() for them (~2-3s faster per command).
+    tcl = server.TclClient()
+
+    def _warm():
+        try:
+            tcl.warmup()
+        except Exception as e:  # noqa: BLE001
+            print(f"[gh_monitor] tcl warmup will retry on use: {e}")
+
     try:
+        warm = threading.Thread(target=_warm, daemon=True)
+        warm.start()
+
         if mode == "monitor":
-            soc, ac_on = server.monitor_once()
+            soc = server.read_battery_soc()
+            warm.join(60)
+            soc, ac_on = server.monitor_once(tcl=tcl)
             messages.append("monitor pass done")
             try:
                 flow = server.read_power_flow()
@@ -101,25 +119,32 @@ def main():
                 messages.append(f"flow: {e}")
         elif mode == "on":
             soc = server.read_battery_soc()
+            warm.join(60)
+            try:
+                flow = server.read_power_flow()
+            except Exception as e:  # noqa: BLE001
+                messages.append(f"flow: {e}")
             if soc < server.ON_THRESHOLD:
                 guard = f"battery_too_low {soc:.1f}%"
                 messages.append("denied: battery below threshold")
             else:
-                server.TclClient().set_power(True)
+                tcl.set_power(True)
                 messages.append("AC turned ON")
             try:
-                ac_on = server.TclClient().get_power_switch()
+                ac_on = tcl.get_power_switch()
             except Exception as e:  # noqa: BLE001
                 messages.append(f"state read: {e}")
         else:  # off
             try:
                 soc = server.read_battery_soc()
+                flow = server.read_power_flow()
             except Exception as e:  # noqa: BLE001
                 messages.append(f"soc read: {e}")
-            server.TclClient().set_power(False)
+            warm.join(60)
+            tcl.set_power(False)
             messages.append("AC turned OFF")
             try:
-                ac_on = server.TclClient().get_power_switch()
+                ac_on = tcl.get_power_switch()
             except Exception as e:  # noqa: BLE001
                 messages.append(f"state read: {e}")
 
